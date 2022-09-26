@@ -1,0 +1,141 @@
+
+# baby arx
+DownUnder CTF 2022; Crypto (Beginner)
+
+Writeup by danlliu from WolvSec (solved)
+
+## General Approach
+
+In this challenge, we are given a simple ARX (addition, rotation, XOR) cipher, which is initialized to the value of the flag. The ARX procedure is run 64 times, and we are given the output afterwards.
+
+## The Code
+
+For this challenge, we're given a simple Python file, shown below.
+
+```python
+class baby_arx():
+    def __init__(self, key):
+        assert len(key) == 64
+        self.state = list(key)
+
+    def b(self):
+        b1 = self.state[0]
+        b2 = self.state[1]
+        b1 = (b1 ^ ((b1 << 1) | (b1 & 1))) & 0xff
+        b2 = (b2 ^ ((b2 >> 5) | (b2 << 3))) & 0xff
+        b = (b1 + b2) % 256
+        self.state = self.state[1:] + [b]
+        return b
+
+    def stream(self, n):
+        return bytes([self.b() for _ in range(n)])
+
+
+FLAG = open('./flag.txt', 'rb').read().strip()
+cipher = baby_arx(FLAG)
+out = cipher.stream(64).hex()
+print(out)
+
+# cb57ba706aae5f275d6d8941b7c7706fe261b7c74d3384390b691c3d982941ac4931c6a4394a1a7b7a336bc3662fd0edab3ff8b31b96d112a026f93fff07e61b
+```
+
+Let's break down what this code does step by step. First, we have the `__init__` function, where we initialize the `state` variable to the key passed in. Next, we have the `b` function, which performs one round of the ARX procedure and returns the resulting value of `b = (b1 + b2) % 256`. Finally, we have the `stream` function, which runs `b` the provided `n` times, returning a bytestring of the returned values. Outside of the `baby_arx` class, we see that the flag is read and used to create a `baby_arx` object using the flag as the key. Then, the `b` operation is performed 64 times.
+
+There are two overall approaches to solving this challenge.
+
+## Approach 1 (official solve): Using known first character of flag as a crib
+
+The provided [solve script](https://github.com/DownUnderCTF/Challenges_2022_Public/blob/main/crypto/baby-arx/solve/solv.py) is shown below:
+
+```python
+from string import printable
+
+ct = bytes.fromhex('cb57ba706aae5f275d6d8941b7c7706fe261b7c74d3384390b691c3d982941ac4931c6a4394a1a7b7a336bc3662fd0edab3ff8b31b96d112a026f93fff07e61b')
+
+b2_inv = {}
+for c in printable:
+    i = ord(c)
+    b2 = (i ^ ((i >> 5) | (i << 3))) & 0xff
+    b2_inv[b2] = i
+
+flag = b'D'
+for b in ct[:-1]:
+    b1 = flag[-1]
+    b1 = (b1 ^ ((b1 << 1) | (b1 & 1))) & 0xff
+    b2 = (b - b1) % 256
+    flag += bytes([b2_inv[b2]])
+
+print(flag.decode())
+```
+
+Let's take a look at how this works. First, we initialize the ciphertext `ct`, and we create a lookup table for the left rotation (`b2_inv`). Next, we loop through each byte in the ciphertext, except the last. To determine why we skip this last byte, we can work through a smaller example with 4 bytes. Let's say the flag is `ABCD`, and we run `b` four times. Then, we have the following state values:
+
+```python
+state0 = [65, 66, 67, 68]
+# apply b(): b1 = 65, b2 = 66; b = 18
+state1 = [66, 67, 68, 18]
+# apply b(); b1 = 66, b2 = 67; b = 31
+state2 = [67, 68, 18, 31]
+# apply b(); b1 = 67, b2 = 68; b = 42
+state3 = [68, 18, 31, 42]
+# apply b(); b1 = 68, b2 = 18; b = 78
+state4 = [18, 31, 42, 78]
+```
+
+In this solution, we utilize the first character of the flag as a crib (a known section of plaintext that helps us decrypt the remainder of the ciphertext). In this case, we'd use `A` (in the real flag, the crib is `D`). From here, we can reverse the `b` function given `b1` and `b` to get `b2`, which is the next character of the flag. Since we already have one character of the flag, we only have to run it _three_ times, not four times. Thus, we can skip the last character of the ciphertext (which would give us the original `b` either way, not a character of the flag). From here, we can calculate what `b1` is transformed to under `b1 = (b1 ^ ((b1 << 1) | (b1 & 1))) << 0xff`, then determine what `b2` would be (`b2 = (b - b1) % 256`). From here, we can reverse the bit rotation using `b2_inv`, and this will give us the character of the flag! We then use this character to decode the next character, and so on.
+
+Solution: `DUCTF{i_d0nt_th1nk_th4ts_h0w_1t_w0rks_actu4lly_92f45fb961ecf420}`
+
+## Approach 2 (my solution): Utilize overlapping `state` value to solve flag
+
+Let's take a look again at our four-character example:
+
+```python
+state0 = [65, 66, 67, 68]
+# apply b(): b1 = 65, b2 = 66; b = 18
+state1 = [66, 67, 68, 18]
+# apply b(); b1 = 66, b2 = 67; b = 31
+state2 = [67, 68, 18, 31]
+# apply b(); b1 = 67, b2 = 68; b = 42
+state3 = [68, 18, 31, 42]
+# apply b(); b1 = 68, b2 = 18; b = 78
+state4 = [18, 31, 42, 78]
+```
+
+In Approach 1, we didn't use the last value (`b = 78`) since we could solve the flag from the crib and the first three values. However, this approach relies on the fact that the value `b = 18` from the first iteration is later used as `b2` in the last iteration. Thus, we can determine `b1` from the values of `b` and `b2`. One key flaw of this approach is if the key was generated by `urandom` or similar, and could contain values between 0 and 255. This is because the transformation `b1 = (b1 ^ ((b1 << 1) | (b1 & 3))) & 0xff` is not one-to-one (values 128-255 map onto the same set of values as 0-127). Thus, it would be impossible to know for sure which original value was used. However, if the key was generated by `urandom` and no other information was given, we would be unable to perform Approach 1 as well (if we were given the first byte, Approach 1 would still succeed). This approach works because all the characters are in the range of ASCII values (0 through 127).
+
+The final solve script is shown below:
+
+```python
+def reverse_b(b2, target):
+    # b1 = (b1 ^ ((b1 << 1) | (b1 & 1))) & 0xff
+    b2 = (b2 ^ ((b2 >> 5) | (b2 << 3))) & 0xff
+    b1 = target - b2
+    if b1 < 0:
+        b1 += 256
+    for i in range(256):
+        bi = (i ^ ((i << 1) | (i & 1))) & 0xff
+        if bi == b1:
+            return i
+
+def main():
+    output = bytes.fromhex('cb57ba706aae5f275d6d8941b7c7706fe261b7c74d3384390b691c3d982941ac4931c6a4394a1a7b7a336bc3662fd0edab3ff8b31b96d112a026f93fff07e61b')
+    i2 = 0xcb
+
+    flag = ''
+
+    for i in range(64):
+        target = output[-i - 1]
+        i1 = reverse_b(i2, target)
+        flag += chr(i1)
+        i2 = i1
+
+    print(flag[::-1])
+
+
+main()
+```
+
+The key intuition here is that we know the value of `b2` utilized in the last iteration, meaning that we can find `b1` for that iteration. From here, we also have `b2` for the previous iteration, and we can continue this over and over to get the flag in reverse.
+
+Solution: `DUCTF{i_d0nt_th1nk_th4ts_h0w_1t_w0rks_actu4lly_92f45fb961ecf420}`
